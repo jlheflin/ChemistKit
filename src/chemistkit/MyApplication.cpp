@@ -1,87 +1,96 @@
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
-#include <iostream>
-#include <vector>
-#include <cmath>
-// Generates vertices and indices for a UV sphere
-void generateSphere(float radius, unsigned int sectorCount, unsigned int stackCount,
-                    std::vector<float>& vertices, std::vector<unsigned int>& indices) {
-    float x, y, z, xy;                              // vertex position
-    float sectorStep = 2 * M_PI / sectorCount;
-    float stackStep = M_PI / stackCount;
-    float sectorAngle, stackAngle;
+#include <chemistkit.hpp>
 
-    // vertices
-    for(unsigned int i = 0; i <= stackCount; ++i) {
-        stackAngle = M_PI / 2 - i * stackStep;        // from pi/2 to -pi/2
-        xy = radius * cosf(stackAngle);             // r * cos(u)
-        z = radius * sinf(stackAngle);              // r * sin(u)
+unsigned int make_module(const std::string& filepath, unsigned int module_type) {
+    std::ifstream file;
+    std::stringstream bufferedLines;
+    std::string line;
 
-        // add (sectorCount+1) vertices per stack
-        for(unsigned int j = 0; j <= sectorCount; ++j) {
-            sectorAngle = j * sectorStep;           // from 0 to 2pi
+    file.open(filepath);
+    while (std::getline(file, line)) {
+        bufferedLines << line << "\n";
+    }
+    std::string shaderSource = bufferedLines.str();
+    const char* shaderSrc = shaderSource.c_str();
 
-            x = xy * cosf(sectorAngle);             // r * cos(u) * cos(v)
-            y = xy * sinf(sectorAngle);             // r * cos(u) * sin(v)
+    bufferedLines.str("");
+    file.close();
 
-            // vertex position
-            vertices.push_back(x);
-            vertices.push_back(y);
-            vertices.push_back(z);
-        }
+    unsigned int shaderModule = glCreateShader(module_type);
+    glShaderSource(shaderModule, 1, &shaderSrc, NULL);
+    glCompileShader(shaderModule);
+
+    int success;
+    glGetShaderiv(shaderModule, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char errorLog[1024];
+        glGetShaderInfoLog(shaderModule, 1024, NULL, errorLog);
+        std::cout << "Shader Module compilation error:\n" << errorLog << std::endl;
+    }
+    return shaderModule;
+}
+
+unsigned int make_shader(const std::string& vertex_filepath, const std::string& fragment_filepath) {
+    std::vector<unsigned int> modules;
+    modules.push_back(make_module(vertex_filepath, GL_VERTEX_SHADER));
+    modules.push_back(make_module(fragment_filepath, GL_FRAGMENT_SHADER));
+
+    unsigned int shader = glCreateProgram();
+    for (unsigned int shaderModule : modules) {
+        glAttachShader(shader, shaderModule);
+    }
+    glLinkProgram(shader);
+
+    int success;
+    glGetProgramiv(shader, GL_LINK_STATUS, &success);
+    if (!success) {
+        char errorLog[1024];
+        glGetProgramInfoLog(shader, 1024, NULL, errorLog);
+        std::cout << "Shader Linking error:\n" << errorLog << std::endl;
     }
 
-    // indices
-    unsigned int k1, k2;
-    for(unsigned int i = 0; i < stackCount; ++i) {
-        k1 = i * (sectorCount + 1);     // beginning of current stack
-        k2 = k1 + sectorCount + 1;      // beginning of next stack
-
-        for(unsigned int j = 0; j < sectorCount; ++j, ++k1, ++k2) {
-            // 2 triangles per sector excluding first and last stacks
-            if(i != 0) {
-                indices.push_back(k1);
-                indices.push_back(k2);
-                indices.push_back(k1 + 1);
-            }
-
-            if(i != (stackCount-1)) {
-                indices.push_back(k1 + 1);
-                indices.push_back(k2);
-                indices.push_back(k2 + 1);
-            }
-        }
+    for (unsigned int shaderModule : modules) {
+        glDeleteShader(shaderModule);
     }
+    return shader;
 }
 
 int main() {
-    if(!glfwInit()) return -1;
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    GLFWwindow* window;
 
-    auto* window =
-      glfwCreateWindow(800, 600, "ChemistKit OpenGL", nullptr, nullptr);
-    if(!window) return -1;
-
-    glfwMakeContextCurrent(window);
-    if(!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "Failed to initialize GLAD\n";
+    if (!glfwInit()) {
+        std::cout << "GLFW couldn't start" << std::endl;
         return -1;
     }
 
-    while(!glfwWindowShouldClose(window)) {
-        glClearColor(0.2f, 0.3f, 0.4f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        glfwSwapBuffers(window);
-        glfwPollEvents();
-        std::vector<float> vertices;
-        std::vector<unsigned int> indices;
-        generateSphere(1.0f, 36, 18, vertices, indices);
+    window = glfwCreateWindow(640, 480, "My Window", NULL, NULL);
+    glfwMakeContextCurrent(window);
+
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        glfwTerminate();
+        return -1;
     }
 
-    glfwDestroyWindow(window);
+    glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+
+    unsigned int shader = make_shader(
+        "/home/jacob/Projects/ChemistKit/src/chemistkit/shaders/vertex.vert",
+        "/home/jacob/Projects/ChemistKit/src/chemistkit/shaders/fragment.frag"
+    );
+    
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glUseProgram(shader);
+        
+        glfwSwapBuffers(window);
+    }
+
+    glDeleteProgram(shader);
     glfwTerminate();
+
     return 0;
 }

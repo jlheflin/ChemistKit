@@ -15,17 +15,23 @@
 cmake_minimum_required(VERSION 3.14)
 
 project(chemistkit VERSION "1.0.0" LANGUAGES CXX C)
+find_package(OpenGL REQUIRED)
+find_package(glfw3 REQUIRED)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 set(CHEMISTKIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/${CMAKE_PROJECT_NAME}")
-set(CHEMISTKIT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(CHEMISTKIT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/${PROJECT_NAME}")
 
 add_executable(${CMAKE_PROJECT_NAME}
     "${CHEMISTKIT_SOURCE_DIR}/MyApplication.cpp"
+    "${CHEMISTKIT_INCLUDE_DIR}/chemistkit.hpp"
+    "${CHEMISTKIT_SOURCE_DIR}/glad.c"
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME}
     PUBLIC
         "${CHEMISTKIT_INCLUDE_DIR}"
-        "${VCPKG_INCLUDE_DIRS}"
 )
+
+target_link_libraries(${CMAKE_PROJECT_NAME} glfw GLEW OpenGL::GL)
