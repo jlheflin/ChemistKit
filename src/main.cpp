@@ -12,12 +12,57 @@
 #include <glad/glad.h>
   
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include "imgui_internal.h"
+
+static float g_zoom = 0.2f;
+
+struct OrbitCamera {
+  glm::vec3 target = glm::vec3(0.0f);
+  float distance = 10.0f;
+  float yaw = 0.0f;
+  float pitch = 0.3f;
+
+  float fov = 45.0f;
+  float nearPlane = 0.01f;
+  float farPlane = 1000.0f;
+
+  glm::vec3 position() const {
+    glm::vec3 dir;
+    dir.x = cos(pitch) * sin(yaw);
+    dir.y = sin(pitch);
+    dir.z = cos(pitch) * cos(yaw);
+    return target + dir * distance;
+  }
+
+  glm::mat4 view() const {
+    return glm::lookAt(position(), target, glm::vec3(0,1,0));
+  }
+
+  glm::mat4 projection(float aspect) const {
+    return glm::perspective(glm::radians(fov), aspect, nearPlane, farPlane);
+  }
+};
+
+static OrbitCamera g_cam;
 
 size_t getMemoryUsageMB() {
   std::ifstream file("/proc/self/statm");
   size_t size, resident;
   file >> size >> resident;
   return resident * (size_t)sysconf(_SC_PAGESIZE) / (1024 * 1024);
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+  ImGuiIO& io = ImGui::GetIO();
+  if (io.WantCaptureMouse) {
+    return;
+  }
+
+  g_cam.distance *= std::exp(-0.1f * float(yoffset));
+  g_cam.distance = glm::clamp(g_cam.distance, 0.2f, 500.0f);
 }
 
 static void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
@@ -31,6 +76,8 @@ struct Mesh {
 
 struct Instance {
   float x, y ,z;
+  float radius;
+  float r, g, b;
 };
 
 Mesh createSphere(float radius, int sectorCount, int stackCount) {
@@ -167,16 +214,65 @@ struct Molecule {
   }
 };
 
+Molecule read_xyz(std::string filename) {
+  std::ifstream xyz_file(filename);
+  if (!xyz_file.is_open()) {
+    throw std::runtime_error("Failed to open file: " + filename + "\n");
+  }
+
+  Molecule mol;
+  int natoms;
+  std::string comment;
+
+  if (!(xyz_file >> natoms)){
+    throw std::runtime_error("Failed to read atom count.\n");
+  }
+
+  xyz_file.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+  std::getline(xyz_file, comment);
+
+  std::string element;
+  float x, y, z;
+  while (xyz_file >> element >> x >> y >> z) {
+    int atomicNum = 0;
+    if (element == "H") {
+      atomicNum = 1;
+    } else if (element == "O") {
+      atomicNum = 8;
+    } else {
+      std::cerr << "Unknown atom: " << element << "\n";
+      throw std::runtime_error("Unknown atom: " + element + "\n");
+    }
+
+    Atom a = {
+      .sym = element,
+      .atomicNumber = atomicNum,
+      .x = x,
+      .y = y,
+      .z = z
+    };
+
+    mol.atoms.push_back(a);
+  }
+  if ((int)mol.atoms.size() != natoms) {
+    throw std::runtime_error(
+      "Number of atoms not equal to mol.atoms: " + std::to_string(natoms) + " : " + std::to_string(mol.atoms.size())
+    );
+  }
+  return mol;
+}
+
 AtomDraw toDraw(const Atom& a) {
   AtomDraw d{};
   d.x = a.x;
   d.y = a.y;
   d.z = a.z;
 
-  d.radius = 0.25f;
-  d.r = 0.8f;
-  d.g = 0.8f;
-  d.b = 0.8f;
+  switch(a.atomicNumber) {
+    case 1: d.radius=(25.0/53.0)*0.2; d.r=0.8f; d.g=0.8f; d.b=0.8f; break;
+    case 8: d.radius=(60.0/53.0)*0.2; d.r=1.0f; d.g=0.0f; d.b=0.0f; break;
+    default: d.radius=(53.0)*0.2; d.r=0.0f; d.g=0.0f; d.b=0.0f;
+  }
 
   return d;
 }
@@ -199,32 +295,77 @@ inline float randRange(float min, float max) {
 }
 
 auto main() -> int {
+  if (glfwPlatformSupported(GLFW_PLATFORM_WAYLAND)) {
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WAYLAND);
+  }
   glfwInit();
+  int platform = glfwGetPlatform();
+  switch (platform)
+  {
+      case GLFW_PLATFORM_WIN32:
+          printf("Platform: Win32\n");
+          break;
+
+      case GLFW_PLATFORM_COCOA:
+          printf("Platform: Cocoa (macOS)\n");
+          break;
+
+      case GLFW_PLATFORM_WAYLAND:
+          printf("Platform: Wayland\n");
+          break;
+
+      case GLFW_PLATFORM_X11:
+          printf("Platform: X11\n");
+          break;
+
+      case GLFW_PLATFORM_NULL:
+          printf("Platform: Null (no window system)\n");
+          break;
+
+      default:
+          printf("Unknown platform\n");
+          break;
+  }
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_RESIZABLE, 1);
-  std::vector<Atom> atoms;
+  
 
-  for (int i = 0; i < 500000; i++) {
-    Atom a;
-    a.sym = "H";
-    a.atomicNumber = 1;
-    a.x = randRange(-5.0f, 5.0f);
-    a.y = randRange(-5.0f, 5.0f);
-    a.z = randRange(-5.0f, 5.0f);
-
-    atoms.push_back(a);
+  Molecule mol = read_xyz("./waterbox-1195.xyz");
+  for (size_t i = 0; i < mol.atoms.size(); i++) {
+    auto a = mol.atoms[i];
+    std::cout << "[" << i << "]: " << a.sym
+              << "(Z= " << a.atomicNumber << ") (" << a.x << ", " << a.y << ", " << a.z << ")\n";
   }
 
+  // for (int i = 0; i < 50; i++) {
+  //   Atom a;
+  //   a.sym = "H";
+  //   a.atomicNumber = 1;
+  //   a.x = randRange(-5.0f, 5.0f);
+  //   a.y = randRange(-5.0f, 5.0f);
+  //   a.z = randRange(-5.0f, 5.0f);
+
+  //   atoms.push_back(a);
+  // }
+
   GLFWwindow* window = glfwCreateWindow(1200, 800, "Test", NULL, NULL);
+  GLFWwindow* window2 = glfwCreateWindow(1200, 800, "Test", NULL, window);
 
   if (window == nullptr) {
     std::cerr << "Failed to create GLFW window\n";
     glfwTerminate();
     return -1;
   }
+  if (window2 == nullptr) {
+    std::cerr << "Failed to create GLFW window\n";
+    glfwTerminate();
+    return -1;
+  }
+
   glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+  glfwSetScrollCallback(window, scroll_callback);
   glfwMakeContextCurrent(window);
 
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
@@ -234,6 +375,18 @@ auto main() -> int {
   std::cout << "Vendor:   " << glGetString(GL_VENDOR)   << "\n";
   std::cout << "Renderer: " << glGetString(GL_RENDERER) << "\n";
   std::cout << "Version:  " << glGetString(GL_VERSION)  << "\n";
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO(); (void)io;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  
+
+  ImGui::StyleColorsDark();
+
+  ImGui_ImplGlfw_InitForOpenGL(window, true);
+  ImGui_ImplOpenGL3_Init("#version 330 core");
 
   int fbw, fbh;
   glfwGetFramebufferSize(window, &fbw, &fbh);
@@ -245,42 +398,43 @@ auto main() -> int {
   layout(location=1) in vec3 aNrm;
 
   layout(location=2) in vec3 iPos;
+  layout(location=3) in float iRadius;
+  layout(location=4) in vec3 iColor;
 
-  out vec3 vNrm;
+  out vec3 vNrmVS;
   out vec3 vColor;
 
-  uniform float uAspect;
-  uniform float uZoom;
-  uniform float uRadius;
-  uniform vec3 uColor;
+  uniform mat4 uView;
+  uniform mat4 uProj;
 
   void main() {
-    vNrm = aNrm;
-    vColor = uColor;
-    
-    vec4 pos = vec4((aPos * uRadius) + iPos, 1.0);
-    pos.x /= uAspect;
-    pos.xyz *= uZoom;
-    gl_Position = pos;
+    vec3 worldPos = (aPos * iRadius) + iPos;
+
+    vNrmVS = mat3(uView) * aNrm;
+    vColor = iColor;
+
+    gl_Position = uProj * uView * vec4(worldPos, 1.0);
   }
   )";
 
   const char* fsSrc = R"(#version 330 core
-  in vec3 vNrm;
+  in vec3 vNrmVS;
   in vec3 vColor;
   out vec4 FragColor;
 
-  uniform vec3 uColor;
-
   void main() {
-    float lighting = max(dot(normalize(vNrm), normalize(vec3(0.5, 0.8, 0.2))), 0.0);
-    FragColor = vec4(vColor * (0.2 + 0.8 * lighting), 1.0);
+    vec3 N = normalize(vNrmVS);
+    vec3 L = normalize(vec3(0.0, 0.0, 1.0));
+
+    float diff = max(dot(N, L), 0.0);
+    vec3 color = vColor * (0.2 + 0.8 * diff);
+    FragColor = vec4(color, 1.0);
   }
   )";
 
   GLuint program = createProgram(vsSrc, fsSrc);
 
-  Mesh sphere = createSphere(1.0f, 12, 6);
+  Mesh sphere = createSphere(1.0f, 100, 100);
 
   GLuint VAO, VBO, EBO;
   glGenVertexArrays(1, &VAO);
@@ -326,7 +480,7 @@ auto main() -> int {
   glGenBuffers(1, &instanceVBO);
   glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
   glBufferData(GL_ARRAY_BUFFER,
-               atoms.size() * sizeof(Instance),
+               mol.atoms.size() * sizeof(Instance),
                nullptr,
                GL_STREAM_DRAW);
 
@@ -334,26 +488,64 @@ auto main() -> int {
   glBindVertexArray(VAO);
   glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
 
-  // layout(location=2) vec3 iPos
-  glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Instance), (void*)0);
+  // iPos (location=2) => offset x
+  glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Instance),
+                        (void*)offsetof(Instance, x));
   glEnableVertexAttribArray(2);
   glVertexAttribDivisor(2, 1);
 
-  glfwSwapInterval(1);
-  std::vector<Instance> instances(atoms.size());
-  std::vector<std::vector<Instance>> steps(500, instances);
+  // iRadius (location=3) => offset radius
+  glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Instance),
+                        (void*)offsetof(Instance, radius));
+  glEnableVertexAttribArray(3);
+  glVertexAttribDivisor(3, 1);
 
-  for (size_t i = 0; i < atoms.size(); i++) {
-    instances[i] = {atoms[i].x, atoms[i].y, atoms[i].z};
+  // iColor (location=4) => offset r
+  glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Instance),
+                        (void*)offsetof(Instance, r));
+  glEnableVertexAttribArray(4);
+  glVertexAttribDivisor(4, 1);
+  // glBindVertexArray(VAO);
+  // glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+
+  // // layout(location=2) vec3 iPos
+  // glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Instance), (void*)0);
+  // glEnableVertexAttribArray(2);
+  // glVertexAttribDivisor(2, 1);
+
+  // // layout(location=3) float iRadius
+  // glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Instance), (void*)0);
+  // glEnableVertexAttribArray(2);
+  // glVertexAttribDivisor(2, 1);
+
+  // // layout(location=2) vec3 iPos
+  // glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Instance), (void*)0);
+  // glEnableVertexAttribArray(2);
+  // glVertexAttribDivisor(2, 1);
+
+  glfwSwapInterval(1);
+  std::vector<Instance> instances(mol.atoms.size());
+  std::vector<std::vector<Instance>> steps(50000, instances);
+
+  for (size_t i = 0; i < mol.atoms.size(); i++) {
+    instances[i] = {
+      .x=mol.atoms[i].x,
+      .y=mol.atoms[i].y,
+      .z=mol.atoms[i].z};
   }
+  glm::vec3 c(0);
+  for (auto& a : mol.atoms) c += glm::vec3(a.x,a.y,a.z);
+  c /= float(mol.atoms.size());
+  g_cam.target = c;
+  g_cam.distance = 30.0f; // tweak
 
   for (size_t step = 0; step < steps.size(); step++) {
-    for (size_t i = 0; i < atoms.size(); i++) {
-      atoms[i].x += randRange(-0.1f, 0.1f);
-      atoms[i].y += randRange(-0.1f, 0.1f);
-      atoms[i].z += randRange(-0.1f, 0.1f);
-      AtomDraw d  = toDraw(atoms[i]);
-      instances[i] = {d.x, d.y, d.z};
+    for (size_t i = 0; i < mol.atoms.size(); i++) {
+      mol.atoms[i].x += randRange(-0.05f, 0.05f);
+      mol.atoms[i].y += randRange(-0.05f, 0.05f);
+      mol.atoms[i].z += randRange(-0.05f, 0.05f);
+      AtomDraw d  = toDraw(mol.atoms[i]);
+      instances[i] = {d.x, d.y, d.z, d.radius, d.r, d.g, d.b};
     }
     steps[step] =  instances;
   }
@@ -368,28 +560,145 @@ auto main() -> int {
   size_t step = 0;
   double lastTime = glfwGetTime();
   int frameCount = 0;
+
   while (glfwWindowShouldClose(window) == 0) {
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // ---------- ImGui begin frame (MUST be before any ImGui calls) ----------
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    if (ImGui::BeginMainMenuBar()) {
+      if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Open...", "Ctrl+O")) {
+          
+        }
+        if (ImGui::MenuItem("Save Screenshot", "Ctrl+S")) {
+          
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Quit", "Alt+F4")) {
+          glfwSetWindowShouldClose(window, 1);
+        }
+        ImGui::EndMenu();
+      }
+      if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::MenuItem("Reset Camera", "R")) {
+          g_cam.yaw = 0.0f;
+          g_cam.pitch = 0.3f;
+          g_cam.distance = 30.0f;
+        }
+        ImGui::EndMenu();
+      }
+
+      ImGui::EndMainMenuBar();
+    }
+
+    static bool dragging = false;
+    static double lastX = 0.0, lastY = 0.0;
+
+    if (!io.WantCaptureMouse) {
+      if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+        double x, y;
+        glfwGetCursorPos(window, &x, &y);
+
+        if (!dragging) {
+          dragging = true;
+          lastX = x;
+          lastY = y;
+        } else {
+          float dx = float(x - lastX);
+          float dy = float(y - lastY);
+          lastX = x;
+          lastY = y;
+
+          float sensitivity = 0.005f;
+          g_cam.yaw -= dx * sensitivity;
+          g_cam.pitch += dy * sensitivity;
+
+          float limit = glm::radians(89.0f);
+          g_cam.pitch = glm::clamp(g_cam.pitch, -limit, limit);
+        }
+      } else {
+        dragging = false;
+      }
+    }
+
+    // ---------- Dockspace with fixed left panel (20%) ----------
+    ImGuiWindowFlags dock_flags =
+        ImGuiWindowFlags_NoDocking |
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoBackground;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+
+    ImGui::Begin("DockSpaceRoot", nullptr, dock_flags);
+    ImGui::PopStyleVar(2);
+
+    ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode);
+
+    static bool layout_built = false;
+    if (!layout_built) {
+      layout_built = true;
+
+      ImGui::DockBuilderRemoveNode(dockspace_id);
+      ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+      ImGui::DockBuilderSetNodeSize(dockspace_id, vp->WorkSize);
+
+      ImGuiID dock_left = 0, dock_right = 0;
+      dock_left = ImGui::DockBuilderSplitNode(
+          dockspace_id, ImGuiDir_Left, 0.20f, &dock_left, &dock_right);
+
+      ImGui::DockBuilderDockWindow("LeftPanel", dock_left);
+      ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::End();
+
+    // ---------- Your docked windows ----------
+    ImGui::Begin("LeftPanel");
+    ImGui::Text("Controls go here");
+    ImGui::Text("Step: %zu", step);
+    ImGui::End();
+
+    // ---------- Your OpenGL draw ----------
     glEnable(GL_DEPTH_TEST);
-    GLint loc = glGetUniformLocation(program, "uAspect");
-    GLint locZoom = glGetUniformLocation(program, "uZoom");
-    GLint locRadius = glGetUniformLocation(program, "uRadius");
-    GLint locColor = glGetUniformLocation(program, "uColor");
+
+
+    
 
     glUseProgram(program);
 
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
     float aspect = (h > 0) ? (float)w / (float)h : 1.0f;
-    float zoom = 0.2f;
 
-    
-    glUniform1f(loc, aspect);
-    glUniform1f(locZoom, zoom);
-    glUniform1f(locRadius, 0.25f);
-    glUniform3f(locColor, 0.8f, 0.8f, 0.8f);
+    glm::mat4 view = g_cam.view();
+    glm::mat4 proj = g_cam.projection(aspect);
+
+    glUniformMatrix4fv(
+      glGetUniformLocation(program, "uView"),
+      1, GL_FALSE, glm::value_ptr(view)
+    );
+
+    glUniformMatrix4fv(
+      glGetUniformLocation(program, "uProj"),
+      1, GL_FALSE, glm::value_ptr(proj)
+    );
+
 
     glBindVertexArray(VAO);
 
@@ -397,37 +706,36 @@ auto main() -> int {
     glBufferSubData(GL_ARRAY_BUFFER,
                     0,
                     steps[step].size() * sizeof(Instance),
-                    steps[step].data()
-    );
+                    steps[step].data());
 
-    glDrawElementsInstanced(
-        GL_TRIANGLES,
-        (GLsizei)sphere.indices.size(),
-        GL_UNSIGNED_INT,
-        0,
-        (GLsizei)atoms.size()
-    );
+    glDrawElementsInstanced(GL_TRIANGLES,
+                            (GLsizei)sphere.indices.size(),
+                            GL_UNSIGNED_INT,
+                            0,
+                            (GLsizei)mol.atoms.size());
 
+    // ---------- Render ImGui on top ----------
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+    // ---------- Events / swap ----------
     glfwPollEvents();
-
     glfwSwapBuffers(window);
+
+    // ---------- FPS + RAM (once per second) ----------
     frameCount++;
     double currentTime = glfwGetTime();
     double delta = currentTime - lastTime;
     if (delta >= 1.0) {
       std::ostringstream ss;
       double fps = frameCount / delta;
-      ss << "FPS: " << fps << " "
-         << "RAM: " << getMemoryUsageMB() << " MB";
+      ss << "FPS: " << fps << "  RAM: " << getMemoryUsageMB() << " MB";
       glfwSetWindowTitle(window, ss.str().c_str());
       frameCount = 0;
       lastTime = currentTime;
     }
 
-
-
-    step = (step+ 1) % steps.size();
+    step = (step + 1) % steps.size();
   }
 
   glViewport(0, 0, 800, 600);
